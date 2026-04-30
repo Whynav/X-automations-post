@@ -1,0 +1,16 @@
+id,configName,creatorsCategory,analysisInstruction,newConceptsInstruction
+cfg1,Growth Marketing,marketing-cro,"Analyze this X/Twitter post in detail for a marketing/CRO creator:
+
+1. HOOK: What grabs attention in the first line? (pattern interrupt, bold claim, number, question, contrarian take)
+2. STRUCTURE: How is the post formatted? (line breaks, bullet points, thread structure, visual hierarchy)
+3. ENGAGEMENT DRIVERS: What makes people like, retweet, quote, or reply? (relatability, controversy, practical value, social proof)
+4. CONTENT PATTERN: What type of post is this? (insight, framework, hot take, case study, listicle, story, data point)
+5. COPYWRITING TECHNIQUES: Specific writing moves (specificity, authority signals, curiosity gaps, open loops, social proof)
+6. CALL TO ACTION: How does the post drive engagement? (implicit, explicit, question, follow prompt)
+7. VISUAL ANALYSIS: If the post has images/infographics, analyze: visual composition, color palette, typography, information hierarchy, design techniques, what makes it scroll-stopping
+
+Format as structured markdown with clear sections.","Study the original post's viral mechanics — its hook type, structure, format, and engagement triggers. Then use those same mechanics to write a new post for a marketing/CRO thought leader.
+
+Your post should steal the viral STRUCTURE (hook formula, formatting pattern, emotional arc, sentence rhythm) from the original — but apply it to marketing/CRO topics: conversion optimization, landing pages, A/B testing, growth frameworks, DTC marketing, paid media, funnel strategy, or conversion psychology.
+
+The output should be practical, specific, and demonstrate real expertise — not generic AI summaries. Think about what would make a CMO or growth lead screenshot this post and share it with their team."

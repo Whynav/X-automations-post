@@ -1,0 +1,19 @@
+node_modules/
+.next/
+.DS_Store
+
+# env
+.env
+.env.local
+.env.*.local
+
+# generated data
+data/posts.csv
+data/generated-images/
+output/
+
+# misc
+*.pem
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*

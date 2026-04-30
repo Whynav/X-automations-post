@@ -1,0 +1,10 @@
+{
+  "name": "tiktok-ai",
+  "private": true,
+  "scripts": {
+    "dev": "cd app && npx next dev",
+    "build": "npm run build --prefix app",
+    "start": "npm run start --prefix app",
+    "lint": "npm run lint --prefix app"
+  }
+}

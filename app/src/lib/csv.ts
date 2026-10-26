@@ -65,11 +65,15 @@ const postColumns = [
   "views", "likes", "replies", "retweets", "quotes", "bookmarks",
   "analysis", "generatedPostText", "generatedImagePrompt", "generatedImageUrl",
   "infographicStyle", "datePosted", "dateAdded", "configName", "starred",
+  // Reddit/AEO Studio fields
+  "hookFormula", "whyItWorked", "visualArchetype",
+  "redditAeoAdaptation", "personalizeQuestion", "claudePromptPacket", "chatgptImagePrompt",
 ];
 
 const creatorColumns = [
   "id", "username", "displayName", "category", "profilePicUrl", "followers",
   "following", "totalPosts", "isBlueVerified", "bio", "lastScrapedAt",
+  "studyFocus", "active",
 ];
 
 const configColumns = [
@@ -79,7 +83,7 @@ const configColumns = [
 
 export function readPosts(): Post[] {
   const rows = readCsv<Record<string, string>>("posts.csv");
-  return rows.map((r) => ({
+  const parsed = rows.map((r) => ({
     ...r,
     views: Number(r.views) || 0,
     likes: Number(r.likes) || 0,
@@ -88,7 +92,33 @@ export function readPosts(): Post[] {
     quotes: Number(r.quotes) || 0,
     bookmarks: Number(r.bookmarks) || 0,
     starred: String(r.starred) === "true",
+    hookFormula: r.hookFormula || "",
+    whyItWorked: r.whyItWorked || "",
+    visualArchetype: r.visualArchetype || "",
+    redditAeoAdaptation: r.redditAeoAdaptation || "",
+    personalizeQuestion: r.personalizeQuestion || "",
+    claudePromptPacket: r.claudePromptPacket || "",
+    chatgptImagePrompt: r.chatgptImagePrompt || "",
   })) as unknown as Post[];
+
+  // Deduplicate by post link (or id), keeping the entry with the richest analysis
+  const dedupedMap = new Map<string, Post>();
+  for (const post of parsed) {
+    const key = post.link || post.id;
+    const existing = dedupedMap.get(key);
+    if (!existing) {
+      dedupedMap.set(key, post);
+    } else {
+      // Keep whichever has a longer Claude prompt or higher metrics
+      const existingScore = (existing.claudePromptPacket?.length || 0) + (existing.likes || 0);
+      const currentScore = (post.claudePromptPacket?.length || 0) + (post.likes || 0);
+      if (currentScore > existingScore) {
+        dedupedMap.set(key, post);
+      }
+    }
+  }
+
+  return Array.from(dedupedMap.values());
 }
 
 export function writePosts(posts: Post[]) {
@@ -100,7 +130,9 @@ export function writePosts(posts: Post[]) {
 export function appendPosts(newPosts: Post[]) {
   return withWriteLock(() => {
     const existing = readPosts();
-    writeCsvSync("posts.csv", [...existing, ...newPosts] as unknown as Record<string, unknown>[], postColumns);
+    const newLinks = new Set(newPosts.map((p) => p.link));
+    const dedupedExisting = existing.filter((p) => !newLinks.has(p.link));
+    writeCsvSync("posts.csv", [...newPosts, ...dedupedExisting] as unknown as Record<string, unknown>[], postColumns);
   });
 }
 
@@ -112,6 +144,8 @@ export function readCreators(): Creator[] {
     following: Number(r.following) || 0,
     totalPosts: Number(r.totalPosts) || 0,
     isBlueVerified: String(r.isBlueVerified) === "true",
+    active: String(r.active) !== "false",
+    studyFocus: r.studyFocus || r.study_focus || "",
   })) as unknown as Creator[];
 }
 

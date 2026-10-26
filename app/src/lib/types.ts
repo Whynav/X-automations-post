@@ -31,6 +31,7 @@ export interface ApifyTweetResult {
   conversationId: string;
 }
 
+
 export interface Post {
   id: string;
   link: string;
@@ -53,6 +54,14 @@ export interface Post {
   dateAdded: string;
   configName: string;
   starred: boolean;
+  // ── Reddit/AEO Studio fields ──
+  hookFormula: string;
+  whyItWorked: string;
+  visualArchetype: string;
+  redditAeoAdaptation: string;
+  personalizeQuestion: string;
+  claudePromptPacket: string;
+  chatgptImagePrompt: string;
 }
 
 export interface Creator {
@@ -67,6 +76,8 @@ export interface Creator {
   isBlueVerified: boolean;
   bio: string;
   lastScrapedAt: string;
+  studyFocus: string;
+  active: boolean;
 }
 
 export interface Config {

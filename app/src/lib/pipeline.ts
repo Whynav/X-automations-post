@@ -1,53 +1,37 @@
+/**
+ * pipeline.ts — X AI Viral Content Analyzer & Reverse-Engineering Studio
+ *
+ * COST GUARDRAIL: Uses GEMINI_API_KEY only for multimodal analysis and prompt generation.
+ * Zero Anthropic / Kie AI API costs.
+ * Generates ready-to-use Claude Writing Prompt + Image Prompts directly for the operator.
+ */
+
 import { scrapeTweets } from "./apify";
-import { uploadImage, analyzePost } from "./gemini";
-import { classifyPosts, computeSplit, generatePost } from "./claude";
-import { generateInfographic } from "./kie";
-import { INFOGRAPHIC_STYLES } from "./brand-style";
+import { uploadImage, analyzePost, generateStudioAssets } from "./gemini";
 import { readCreators, readConfigs, appendPosts } from "./csv";
 import { ApifyTweetResult, Post, PipelineProgress } from "./types";
 import crypto from "crypto";
-import fs from "fs";
-import path from "path";
 
-function pickRandomPersonalImage(): string {
-  const refDir = path.join(process.cwd(), "..", "references");
-  const files = fs.readdirSync(refDir).filter((f) => f.startsWith("personal "));
-  if (files.length === 0) throw new Error("No personal reference images found");
-  return path.join(refDir, files[Math.floor(Math.random() * files.length)]);
-}
-
-function copyPersonalImage(postId: string): string {
-  const srcPath = pickRandomPersonalImage();
-  const ext = path.extname(srcPath).toLowerCase().replace(".", "") || "jpg";
-  const destDir = path.join(process.cwd(), "..", "data", "generated-images");
-  if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-  const destFile = `${postId}.${ext}`;
-  fs.copyFileSync(srcPath, path.join(destDir, destFile));
-  return `data/generated-images/${destFile}`;
-}
+/** Hard cap — protects the $5/mo Apify credit */
+const MAX_TWEETS_PER_CREATOR = 5;
 
 interface PipelineOptions {
   configName: string;
   maxPosts: number;
   topK: number;
   daysLookback: number;
+  creatorUsername?: string;
 }
 
 type ProgressCallback = (progress: PipelineProgress) => void;
 
 const ANALYSIS_CONCURRENCY = 3;
-const GENERATION_CONCURRENCY = 3;
+const GENERATION_CONCURRENCY = 2;
 
 function formatBytes(bytes: number): string {
   if (bytes >= 1_000_000) return (bytes / 1_000_000).toFixed(1) + " MB";
   if (bytes >= 1_000) return (bytes / 1_000).toFixed(1) + " KB";
   return bytes + " B";
-}
-
-function formatCount(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1_000) return (n / 1_000).toFixed(1) + "K";
-  return String(n);
 }
 
 function elapsed(start: number): string {
@@ -110,11 +94,20 @@ export async function runPipeline(
   if (!config) throw new Error(`Config "${options.configName}" not found`);
 
   const allCreators = readCreators();
-  const creators = allCreators.filter(
-    (c) => c.category === config.creatorsCategory
+  let creators = allCreators.filter(
+    (c) => (config.creatorsCategory === "all" || c.category === config.creatorsCategory) && c.active !== false
   );
+  if (options.creatorUsername && options.creatorUsername !== "all") {
+    const single = creators.find(
+      (c) => c.username.toLowerCase() === options.creatorUsername?.toLowerCase()
+    );
+    if (!single) {
+      throw new Error(`Creator @${options.creatorUsername} not found or inactive in "${config.creatorsCategory}"`);
+    }
+    creators = [single];
+  }
   if (creators.length === 0) {
-    throw new Error(`No creators in category "${config.creatorsCategory}"`);
+    throw new Error(`No active creators found matching tag "${config.creatorsCategory}"`);
   }
 
   const progress: PipelineProgress = {
@@ -133,52 +126,54 @@ export async function runPipeline(
     onProgress({ ...progress, log: [...progress.log] });
   };
 
-  // ── Phase 1: Scraping (parallel) ──
+  // ── Phase 1: Scraping (streaming per creator) ──
+  const effectiveMax = Math.min(options.maxPosts, MAX_TWEETS_PER_CREATOR);
+  const scraperName = process.env.TWITTERAPI_IO_KEY
+    ? "TwitterAPI.io (fast tier with Apify fallback)"
+    : "Apify Scraper Lite";
+
   log(`── PHASE 1: SCRAPING ──`);
   log(`Config: ${config.configName} | Category: ${config.creatorsCategory}`);
-  log(`Settings: ${options.maxPosts} max posts, top ${options.topK}, last ${options.daysLookback} days`);
-  log(`Found ${creators.length} creators: ${creators.map((c) => "@" + c.username).join(", ")}`);
-  log(`Scraping all ${creators.length} creators in parallel...`);
+  log(`Engine: ${scraperName} | Cap: ${MAX_TWEETS_PER_CREATOR} tweets/creator`);
+  log(`Settings: ${effectiveMax} max posts, top ${options.topK}, last ${options.daysLookback} days`);
+  log(`Target Creators (${creators.length}): ${creators.map((c) => "@" + c.username).join(", ")}`);
   log(``);
 
-  progress.activeTasks = creators.map((c) => c.username);
-  onProgress({ ...progress });
-
   const scrapeStart = Date.now();
-  const scrapeResults = await Promise.allSettled(
-    creators.map(async (creator) => {
+  const allScrapedTweets: { creator: string; tweets: ApifyTweetResult[] }[] = [];
+
+  for (let i = 0; i < creators.length; i++) {
+    const creator = creators[i];
+    progress.activeTasks = [creator.username];
+    log(`[${i + 1}/${creators.length}] Scraping @${creator.username}...`);
+    onProgress({ ...progress });
+
+    try {
       const tweets = await scrapeTweets(
         creator.username,
-        options.maxPosts,
+        effectiveMax,
         options.daysLookback
       );
-      // Filter out video/gif posts
       const textAndImageTweets = tweets.filter((t) => !hasVideo(t));
-      const topTweets = textAndImageTweets.slice(0, options.topK);
-      return { creator: creator.username, tweets: topTweets, totalFound: textAndImageTweets.length };
-    })
-  );
+      const topTweets = textAndImageTweets.slice(
+        0,
+        Math.min(options.topK, MAX_TWEETS_PER_CREATOR)
+      );
+      allScrapedTweets.push({ creator: creator.username, tweets: topTweets });
 
-  const allScrapedTweets: { creator: string; tweets: ApifyTweetResult[] }[] = [];
-  for (let i = 0; i < scrapeResults.length; i++) {
-    const result = scrapeResults[i];
-    const creator = creators[i];
-    progress.creatorsProcessed++;
-
-    if (result.status === "fulfilled") {
-      const { tweets, totalFound } = result.value;
-      allScrapedTweets.push({ creator: creator.username, tweets });
-      if (tweets.length > 0) {
-        const topViews = tweets.map((t) => formatCount(t.viewCount)).join(", ");
-        log(`@${creator.username}: ${totalFound} text/image posts, selected top ${tweets.length} (${topViews} views)`);
+      if (topTweets.length > 0) {
+        log(`✓ @${creator.username}: ${textAndImageTweets.length} text/image posts found, selected top ${topTweets.length}`);
       } else {
-        log(`@${creator.username}: No text/image posts found`);
+        log(`- @${creator.username}: No text/image posts found in lookback window`);
       }
-    } else {
-      const msg = `Error scraping @${creator.username}: ${result.reason}`;
+    } catch (err: any) {
+      const msg = `✗ Error scraping @${creator.username}: ${err?.message || err}`;
       progress.errors.push(msg);
       log(msg);
     }
+
+    progress.creatorsProcessed++;
+    onProgress({ ...progress });
   }
 
   progress.activeTasks = [];
@@ -194,33 +189,27 @@ export async function runPipeline(
     return;
   }
 
-  // ── Phase 2: Analysis (parallel, 3 concurrent) ──
+  // ── Phase 2: Reverse-Engineering & Direct Save to Posts Studio ──
   log(``);
-  log(`── PHASE 2: ANALYZE ──`);
-  const postsToAnalyze = allScrapedTweets.flatMap((s) =>
+  log(`── PHASE 2: REVERSE-ENGINEERING & INSTANT SAVE TO POSTS STUDIO ──`);
+  const postsToProcess = allScrapedTweets.flatMap((s) =>
     s.tweets.map((t) => ({ creator: s.creator, tweet: t }))
   );
   progress.phase = "analyzing";
-  progress.postsTotal = postsToAnalyze.length;
-  log(`Processing ${postsToAnalyze.length} posts (${ANALYSIS_CONCURRENCY} concurrent)`);
+  progress.postsTotal = postsToProcess.length;
+  progress.postsProcessed = 0;
+  log(`Processing ${postsToProcess.length} posts sequentially with instant save to Posts Studio (pacing: 3.5s)...`);
   log(``);
   onProgress({ ...progress });
 
-  interface AnalyzedItem {
-    creator: string;
-    tweet: ApifyTweetResult;
-    analysis: string;
-    mediaType: Post["mediaType"];
-    mediaUrls: string[];
-  }
+  let savedCount = 0;
 
-  const analyzedItems: AnalyzedItem[] = [];
-
-  await runConcurrent(postsToAnalyze, ANALYSIS_CONCURRENCY, async ({ creator, tweet }, idx) => {
-    const num = idx + 1;
+  for (let i = 0; i < postsToProcess.length; i++) {
+    const { creator, tweet } = postsToProcess[i];
+    const num = i + 1;
     const label = `@${creator}`;
-    const prefix = `[${num}/${postsToAnalyze.length}] ${label}`;
-    progress.activeTasks = [...progress.activeTasks, `${label}`];
+    const prefix = `[${num}/${postsToProcess.length}] ${label}`;
+    progress.activeTasks = [`${label}`];
     onProgress({ ...progress });
 
     const postStart = Date.now();
@@ -237,206 +226,94 @@ export async function runPipeline(
           if (!downloadUrl) continue;
           mediaUrls.push(media.previewUrl || media.url);
 
-          log(`${prefix} Downloading image...`);
+          log(`${prefix} Downloading visual...`);
           const mediaRes = await fetch(downloadUrl, { signal: AbortSignal.timeout(30_000) });
           if (!mediaRes.ok) {
-            log(`${prefix} Download failed (${mediaRes.status}), skipping`);
+            log(`${prefix} Download failed (${mediaRes.status}), skipping image`);
             continue;
           }
           const buffer = Buffer.from(await mediaRes.arrayBuffer());
           if (buffer.length < 500) continue;
-          log(`${prefix} Downloaded ${formatBytes(buffer.length)}`);
 
           const mime = getMimeType(downloadUrl);
           const uploaded = await uploadImage(buffer, `${creator}-${tweet.id}`, mime);
           mediaFiles.push(uploaded);
-          log(`${prefix} Uploaded to Gemini`);
+          log(`${prefix} Visual uploaded to Gemini`);
         }
       }
 
-      const analyzeStart = Date.now();
-      log(`${prefix} Analyzing...`);
+      log(`${prefix} Analyzing mechanics with Gemini...`);
       const analysis = await analyzePost({
         text: tweet.text,
         prompt: config.analysisInstruction,
         mediaFiles: mediaFiles.length > 0 ? mediaFiles : undefined,
       });
-      log(`${prefix} Done (${(analysis.length / 1000).toFixed(1)}K chars) [${elapsed(postStart)}]`);
 
-      analyzedItems.push({ creator, tweet, analysis, mediaType, mediaUrls });
-    } catch (err) {
-      const msg = `${prefix} FAILED — ${err instanceof Error ? err.message : err}`;
-      progress.errors.push(msg);
-      log(msg);
-    }
-
-    progress.postsProcessed++;
-    progress.activeTasks = progress.activeTasks.filter((t) => t !== `${label}`);
-    onProgress({ ...progress });
-    return null;
-  });
-
-  if (analyzedItems.length === 0) {
-    progress.phase = "done";
-    progress.activeTasks = [];
-    log(`No posts were successfully analyzed. Pipeline finished.`);
-    onProgress({ ...progress });
-    return;
-  }
-
-  // ── Phase 3: Generation (parallel, 3 concurrent) ──
-  log(``);
-  log(`── PHASE 3: GENERATE CONTENT ──`);
-  progress.phase = "generating";
-  progress.postsProcessed = 0;
-  progress.postsTotal = analyzedItems.length;
-  onProgress({ ...progress });
-
-  // Classification sub-step
-  const split = computeSplit(analyzedItems.length);
-  log(`Classifying ${analyzedItems.length} posts (target: ${split.numInfographic} infographic, ${split.numPersonal} personal, ${split.numTextOnly} text-only)...`);
-
-  type ClassificationEntry = { postIndex: number; style: string; reasoning: string };
-  let classificationMap = new Map<number, ClassificationEntry>();
-  try {
-    const classifications = await classifyPosts(
-      analyzedItems.map((item, i) => ({
-        index: i,
-        text: item.tweet.text,
-        analysis: item.analysis.slice(0, 500),
-      })),
-      split
-    );
-    classificationMap = new Map(classifications.map((c) => [c.postIndex, c]));
-    const infographicCount = classifications.filter((c) => c.style !== "text-only" && c.style !== "personal").length;
-    const personalCount = classifications.filter((c) => c.style === "personal").length;
-    const textOnlyCount = classifications.filter((c) => c.style === "text-only").length;
-    log(`Classification done: ${infographicCount} infographic + ${personalCount} personal + ${textOnlyCount} text-only`);
-    for (const c of classifications) {
-      const styleLabel = c.style === "text-only" ? "TEXT-ONLY" : c.style === "personal" ? "PERSONAL" : c.style;
-      log(`  Post ${c.postIndex}: ${styleLabel}`);
-    }
-  } catch (classErr) {
-    log(`Classification failed: ${classErr instanceof Error ? classErr.message : classErr}`);
-    log(`Falling back to all-infographic mode`);
-  }
-
-  log(``);
-  log(`Generating content for ${analyzedItems.length} posts (${GENERATION_CONCURRENCY} concurrent)`);
-  log(``);
-  onProgress({ ...progress });
-
-  const completedPosts: Post[] = [];
-
-  await runConcurrent(analyzedItems, GENERATION_CONCURRENCY, async (item, idx) => {
-    const num = idx + 1;
-    const label = `@${item.creator}`;
-    const prefix = `[${num}/${analyzedItems.length}] ${label}`;
-    progress.activeTasks = [...progress.activeTasks, `${label}`];
-    onProgress({ ...progress });
-
-    const genStart = Date.now();
-    const classification = classificationMap.get(idx);
-    const isTextOnly = classification?.style === "text-only";
-    const isPersonal = classification?.style === "personal";
-    const isInfographic = !isTextOnly && !isPersonal;
-    const styleDesc = isInfographic && classification
-      ? INFOGRAPHIC_STYLES[classification.style]?.description
-      : undefined;
-
-    try {
-      const modeLabel = isTextOnly ? " (text-only)" : isPersonal ? " (personal)" : classification ? ` (${classification.style})` : "";
-      log(`${prefix} Generating with Claude${modeLabel}...`);
-      const generated = await generatePost(
-        item.tweet.text,
-        item.analysis,
-        config.newConceptsInstruction,
-        {
-          textOnly: isTextOnly,
-          personal: isPersonal,
-          styleDescription: styleDesc,
-          username: "@olegrows",
-        }
-      );
-      log(`${prefix} Post text ready (${generated.postText.length} chars)`);
+      log(`${prefix} Building Claude Pro master prompt packet...`);
+      const assets = await generateStudioAssets({
+        postText: tweet.text,
+        analysis,
+        generationPrompt: config.newConceptsInstruction,
+      });
 
       const postId = crypto.randomUUID();
-      let generatedImageUrl = "";
-
-      if (isInfographic) {
-        log(`${prefix} Generating infographic...`);
-        try {
-          const imagePath = await generateInfographic(generated.imagePrompt, postId);
-          generatedImageUrl = imagePath;
-          log(`${prefix} Infographic ready (${classification?.style})`);
-        } catch (kieErr) {
-          log(`${prefix} Kie AI failed: ${kieErr instanceof Error ? kieErr.message : kieErr}`);
-        }
-      } else if (isPersonal) {
-        try {
-          generatedImageUrl = copyPersonalImage(postId);
-          log(`${prefix} Personal photo attached`);
-        } catch (imgErr) {
-          log(`${prefix} Personal image copy failed: ${imgErr instanceof Error ? imgErr.message : imgErr}`);
-        }
-      } else {
-        log(`${prefix} Text-only post (no image)`);
-      }
-
       const post: Post = {
         id: postId,
-        link: item.tweet.url,
-        creator: item.creator,
-        text: item.tweet.text,
-        mediaType: item.mediaType,
-        mediaUrls: JSON.stringify(item.mediaUrls),
-        views: item.tweet.viewCount,
-        likes: item.tweet.likeCount,
-        replies: item.tweet.replyCount,
-        retweets: item.tweet.retweetCount,
-        quotes: item.tweet.quoteCount,
-        bookmarks: item.tweet.bookmarkCount,
-        analysis: item.analysis,
-        generatedPostText: generated.postText,
-        generatedImagePrompt: generated.imagePrompt,
-        generatedImageUrl,
-        infographicStyle: classification?.style || "",
-        datePosted: item.tweet.createdAt,
+        link: tweet.url,
+        creator,
+        text: tweet.text,
+        mediaType,
+        mediaUrls: JSON.stringify(mediaUrls),
+        views: tweet.viewCount,
+        likes: tweet.likeCount,
+        replies: tweet.replyCount,
+        retweets: tweet.retweetCount,
+        quotes: tweet.quoteCount,
+        bookmarks: tweet.bookmarkCount,
+        analysis,
+        generatedPostText: assets.claudePromptPacket,
+        generatedImagePrompt: assets.chatgptImagePrompt,
+        generatedImageUrl: "",
+        infographicStyle: assets.visualArchetype,
+        datePosted: tweet.createdAt,
         dateAdded: new Date().toISOString(),
         configName: config.configName,
         starred: false,
+        hookFormula: assets.hookFormula,
+        whyItWorked: assets.whyItWorked,
+        visualArchetype: assets.visualArchetype,
+        redditAeoAdaptation: assets.redditAeoAdaptation,
+        personalizeQuestion: assets.personalizeQuestion,
+        claudePromptPacket: assets.claudePromptPacket,
+        chatgptImagePrompt: assets.chatgptImagePrompt,
       };
 
-      completedPosts.push(post);
-      log(`${prefix} Complete [${elapsed(genStart)}]`);
+      // IMMEDIATELY SAVE TO DISK & POSTS STUDIO
+      appendPosts([post]);
+      savedCount++;
+      log(`✓ ${prefix}: Saved to Posts Studio! (1-click Claude prompt ready) [${elapsed(postStart)}]`);
     } catch (err) {
-      const msg = `${prefix} FAILED — ${err instanceof Error ? err.message : err}`;
+      const msg = `✗ ${prefix} FAILED: ${err instanceof Error ? err.message : err}`;
       progress.errors.push(msg);
       log(msg);
     }
 
     progress.postsProcessed++;
-    progress.activeTasks = progress.activeTasks.filter((t) => t !== `${label}`);
+    progress.activeTasks = [];
     onProgress({ ...progress });
-    return null;
-  });
 
-  // ── Phase 4: Persistence ──
-  log(``);
-  log(`── SAVING ──`);
-  if (completedPosts.length > 0) {
-    appendPosts(completedPosts);
-    log(`Saved ${completedPosts.length} posts`);
-  } else {
-    log(`No posts were successfully generated`);
+    // Pacing breather between posts to safely stay well under Google's 15 RPM rate limit
+    if (i < postsToProcess.length - 1) {
+      await new Promise((r) => setTimeout(r, 3500));
+    }
   }
 
   log(``);
-  log(`── COMPLETE ──`);
+  log(`── PIPELINE COMPLETE ──`);
   log(`Total time: ${elapsed(pipelineStart)}`);
-  log(`Scraped: ${totalScraped} posts | Analyzed: ${analyzedItems.length} | Generated: ${completedPosts.length}`);
+  log(`Posts Scraped: ${totalScraped} | Saved to Posts Studio: ${savedCount}/${postsToProcess.length}`);
   if (progress.errors.length > 0) {
-    log(`Errors: ${progress.errors.length}`);
+    log(`Errors encountered: ${progress.errors.length}`);
   }
 
   progress.phase = "done";

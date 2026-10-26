@@ -33,7 +33,7 @@ export default function CreatorsPage() {
   const [creators, setCreators] = useState<Creator[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Creator | null>(null);
-  const [form, setForm] = useState({ username: "", category: "" });
+  const [form, setForm] = useState({ username: "", category: "", studyFocus: "" });
   const [filterCategory, setFilterCategory] = useState("all");
   const [saving, setSaving] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -53,13 +53,13 @@ export default function CreatorsPage() {
 
   const openNew = () => {
     setEditing(null);
-    setForm({ username: "", category: "" });
+    setForm({ username: "", category: "", studyFocus: "" });
     setDialogOpen(true);
   };
 
   const openEdit = (creator: Creator) => {
     setEditing(creator);
-    setForm({ username: creator.username, category: creator.category });
+    setForm({ username: creator.username, category: creator.category, studyFocus: creator.studyFocus || "" });
     setDialogOpen(true);
   };
 
@@ -201,11 +201,20 @@ export default function CreatorsPage() {
                   />
                 </div>
                 <div>
-                  <Label className="text-xs text-muted-foreground">Category</Label>
+                  <Label className="text-xs text-muted-foreground">Category (e.g. Reddit Operators, Reddit Process, etc.)</Label>
                   <Input
                     value={form.category}
                     onChange={(e) => setForm({ ...form, category: e.target.value })}
-                    placeholder="e.g. marketing-cro"
+                    placeholder="e.g. Reddit Operators"
+                    className="mt-1.5 rounded-xl glass border-white/[0.08] h-11"
+                  />
+                </div>
+                <div>
+                  <Label className="text-xs text-muted-foreground">Specific Tag / Focus (e.g. Distribution Tactics, Reputation Control, etc.)</Label>
+                  <Input
+                    value={form.studyFocus}
+                    onChange={(e) => setForm({ ...form, studyFocus: e.target.value })}
+                    placeholder="e.g. Reddit Operator or Distribution Tactics"
                     className="mt-1.5 rounded-xl glass border-white/[0.08] h-11"
                   />
                 </div>
@@ -288,9 +297,16 @@ export default function CreatorsPage() {
                         <BadgeCheck className="h-3.5 w-3.5 text-blue-400" />
                       )}
                     </div>
-                    <Badge variant="secondary" className="mt-0.5 rounded-md text-[10px] bg-white/[0.05] border border-white/[0.06]">
-                      {creator.category}
-                    </Badge>
+                    <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                      <Badge variant="secondary" className="rounded-md text-[10px] bg-purple-500/10 text-purple-300 border border-purple-500/20">
+                        {creator.category}
+                      </Badge>
+                      {creator.studyFocus && (
+                        <Badge variant="outline" className="rounded-md text-[10px] bg-white/[0.04] border-white/[0.08] text-cyan-300">
+                          {creator.studyFocus}
+                        </Badge>
+                      )}
+                    </div>
                   </div>
                 </a>
                 <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">

@@ -11,7 +11,7 @@ export async function POST(req: NextRequest) {
     return new Response(JSON.stringify({ error: "Invalid JSON" }), { status: 400 });
   }
 
-  const { configName } = body;
+  const { configName, creatorUsername } = body;
   const maxPosts = Math.min(Math.max(Number(body.maxPosts) || 20, 1), 100);
   const topK = Math.min(Math.max(Number(body.topK) || 3, 1), 10);
   const daysLookback = Math.min(Math.max(Number(body.daysLookback) || 30, 1), 365);
@@ -23,9 +23,18 @@ export async function POST(req: NextRequest) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      // Send regular keep-alive comments so browser never drops connection
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": keep-alive\n\n"));
+        } catch {
+          clearInterval(heartbeat);
+        }
+      }, 5000);
+
       try {
         await runPipeline(
-          { configName, maxPosts, topK, daysLookback },
+          { configName, creatorUsername, maxPosts, topK, daysLookback },
           (progress) => {
             try {
               controller.enqueue(
@@ -56,6 +65,7 @@ export async function POST(req: NextRequest) {
           // stream already closed
         }
       } finally {
+        clearInterval(heartbeat);
         try {
           controller.close();
         } catch {
@@ -67,9 +77,10 @@ export async function POST(req: NextRequest) {
 
   return new Response(stream, {
     headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }

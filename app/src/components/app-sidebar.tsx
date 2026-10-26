@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { MessageSquare, Play, Users, Settings2 } from "lucide-react";
+import { MessageSquare, Play, Users, BookOpen } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -17,10 +17,10 @@ import {
 } from "@/components/ui/sidebar";
 
 const navItems = [
-  { title: "Posts", href: "/posts", icon: MessageSquare },
+  { title: "Posts Studio", href: "/posts", icon: MessageSquare },
   { title: "Run Pipeline", href: "/run", icon: Play },
-  { title: "Creators", href: "/creators", icon: Users },
-  { title: "Configs", href: "/configs", icon: Settings2 },
+  { title: "Creators & Tags", href: "/creators", icon: Users },
+  { title: "Prompts & Knowledge", href: "/configs", icon: BookOpen },
 ];
 
 export function AppSidebar() {

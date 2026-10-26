@@ -1,4 +1,9 @@
 import { ApifyTweetResult } from "./types";
+import {
+  scrapeTweetsViaTwitterApi,
+  scrapeProfileViaTwitterApi,
+  getTwitterApiKey,
+} from "./twitterapi";
 
 const APIFY_TOKEN = process.env.APIFY_API_TOKEN;
 const TWEETS_ACTOR = "apidojo~twitter-scraper-lite";
@@ -6,7 +11,37 @@ const TWEETS_URL = `https://api.apify.com/v2/acts/${TWEETS_ACTOR}/run-sync-get-d
 const PROFILE_ACTOR = "quacker~twitter-scraper";
 const PROFILE_URL = `https://api.apify.com/v2/acts/${PROFILE_ACTOR}/run-sync-get-dataset-items`;
 
+/**
+ * Primary tweet scraping router:
+ * 1. Uses twitterapi.io by default (fast, cheap, no container spinup)
+ * 2. Seamlessly falls back to Apify if twitterapi.io fails or key is missing
+ */
 export async function scrapeTweets(
+  username: string,
+  maxCount: number = 20,
+  daysLookback: number = 365
+): Promise<ApifyTweetResult[]> {
+  const hasTwitterApiKey = Boolean(getTwitterApiKey());
+
+  if (hasTwitterApiKey) {
+    try {
+      const tweets = await scrapeTweetsViaTwitterApi(username, maxCount, daysLookback);
+      return tweets;
+    } catch (err: any) {
+      console.warn(
+        `[Scraper Router] twitterapi.io failed for @${username} (${err?.message || err}). Falling back to Apify...`
+      );
+    }
+  }
+
+  // Fallback to Apify
+  return scrapeTweetsViaApify(username, maxCount, daysLookback);
+}
+
+/**
+ * Apify-specific tweet scraper (preserved as reliable fallback)
+ */
+export async function scrapeTweetsViaApify(
   username: string,
   maxCount: number = 20,
   daysLookback: number = 365
@@ -139,7 +174,33 @@ function normalizeTweet(
   };
 }
 
+/**
+ * Primary profile scraping router:
+ * 1. Uses twitterapi.io by default
+ * 2. Seamlessly falls back to Apify if twitterapi.io fails or key is missing
+ */
 export async function scrapeXProfile(username: string) {
+  const hasTwitterApiKey = Boolean(getTwitterApiKey());
+
+  if (hasTwitterApiKey) {
+    try {
+      const profile = await scrapeProfileViaTwitterApi(username);
+      return profile;
+    } catch (err: any) {
+      console.warn(
+        `[Scraper Router] twitterapi.io profile failed for @${username} (${err?.message || err}). Falling back to Apify...`
+      );
+    }
+  }
+
+  // Fallback to Apify
+  return scrapeProfileViaApify(username);
+}
+
+/**
+ * Apify-specific profile scraper (preserved as reliable fallback)
+ */
+export async function scrapeProfileViaApify(username: string) {
   const res = await fetch(`${PROFILE_URL}?token=${APIFY_TOKEN}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

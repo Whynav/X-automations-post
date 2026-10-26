@@ -4,6 +4,7 @@ import { useEffect, useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -20,8 +21,6 @@ import {
   Heart,
   MessageCircle,
   Repeat2,
-  Eye,
-  Quote,
   Bookmark,
   Search,
   Sparkles,
@@ -29,16 +28,16 @@ import {
   ArrowUpDown,
   ExternalLink,
   Copy,
-  Download,
   FileText,
   ImageIcon,
   ChevronDown,
-  MessageSquare,
   Play,
-  Images,
   Share,
   Check,
   BarChart3,
+  Layers,
+  HelpCircle,
+  Cpu,
 } from "lucide-react";
 import { MarkdownContent } from "@/components/markdown-content";
 import type { Post, Config, Creator } from "@/lib/types";
@@ -76,7 +75,45 @@ function formatDate(dateStr: string): string {
   });
 }
 
-type SortOption = "views" | "likes" | "retweets" | "datePosted" | "dateAdded" | "starred";
+type SortOption =
+  | "viralScore"
+  | "engagementRate"
+  | "likes"
+  | "views"
+  | "retweets"
+  | "bookmarks"
+  | "datePosted"
+  | "starred";
+
+const sortLabels: Record<SortOption, string> = {
+  viralScore: "⚡ Viral Score (X Algorithm)",
+  engagementRate: "📈 Engagement Rate (%)",
+  likes: "❤️ Most Likes",
+  views: "👁️ Most Views",
+  retweets: "🔁 Most Retweets",
+  bookmarks: "🔖 Most Bookmarks",
+  datePosted: "📅 Date Posted",
+  starred: "⭐ Starred First",
+};
+
+// Twitter / X Algorithmic Weighted Engagement Score
+// Heavy Ranker weights: Bookmarks: 20x, Retweets: 10x, Quotes: 8x, Replies: 5x, Likes: 1x
+function getViralScore(p: Post): number {
+  return (
+    (p.bookmarks || 0) * 20 +
+    (p.retweets || 0) * 10 +
+    (p.quotes || 0) * 8 +
+    (p.replies || 0) * 5 +
+    (p.likes || 0) * 1
+  );
+}
+
+// Engagements relative to Impressions (Views)
+function getEngagementRate(p: Post): number {
+  if (!p.views || p.views <= 0) return 0;
+  const total = (p.likes || 0) + (p.retweets || 0) + (p.replies || 0) + (p.bookmarks || 0);
+  return (total / p.views) * 100;
+}
 
 function VerifiedBadge({ className = "h-[18px] w-[18px]" }: { className?: string }) {
   return (
@@ -97,6 +134,50 @@ function XLogo({ className = "h-5 w-5" }: { className?: string }) {
   );
 }
 
+function getArchetypeBadge(rawStyle: string) {
+  const s = (rawStyle || "").toLowerCase();
+  if (s.includes("bar chart") || s.includes("comparison")) {
+    return {
+      label: "Bar Chart Comparison",
+      className: "border-[#C8FF00]/40 text-[#C8FF00] bg-[#C8FF00]/10",
+      dot: "bg-[#C8FF00]",
+    };
+  }
+  if (s.includes("proportional") || s.includes("blocks")) {
+    return {
+      label: "Proportional Blocks",
+      className: "border-[#3B82F6]/40 text-[#60a5fa] bg-[#3B82F6]/10",
+      dot: "bg-[#3B82F6]",
+    };
+  }
+  if (s.includes("ranked") || s.includes("horizontal") || s.includes("leaderboard")) {
+    return {
+      label: "Ranked Horizontal Bars",
+      className: "border-amber-400/40 text-amber-300 bg-amber-400/10",
+      dot: "bg-amber-400",
+    };
+  }
+  if (s.includes("timeline")) {
+    return {
+      label: "Timeline",
+      className: "border-emerald-400/40 text-emerald-300 bg-emerald-400/10",
+      dot: "bg-emerald-400",
+    };
+  }
+  if (s.includes("pyramid") || s.includes("funnel")) {
+    return {
+      label: "Pyramid / Funnel",
+      className: "border-purple-400/40 text-purple-300 bg-purple-400/10",
+      dot: "bg-purple-400",
+    };
+  }
+  return {
+    label: "Text-Only",
+    className: "border-white/10 text-muted-foreground bg-white/[0.04]",
+    dot: "bg-slate-400",
+  };
+}
+
 export default function PostsPage() {
   return (
     <Suspense>
@@ -112,11 +193,12 @@ function PostsContent() {
   const [creators, setCreators] = useState<Creator[]>([]);
   const [filterConfig, setFilterConfig] = useState<string>("all");
   const [filterCreator, setFilterCreator] = useState<string>(searchParams.get("creator") || "all");
-  const [sortBy, setSortBy] = useState<SortOption>("likes");
+  const [filterArchetype, setFilterArchetype] = useState<string>("all");
+  const [sortBy, setSortBy] = useState<SortOption>("viralScore");
   const [modalPost, setModalPost] = useState<Post | null>(null);
-  const [modalTab, setModalTab] = useState<"original" | "analysis" | "generated">("generated");
-  const [showImagePrompt, setShowImagePrompt] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [modalTab, setModalTab] = useState<"original" | "analysis" | "claude" | "image">("claude");
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [personalAnswers, setPersonalAnswers] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetch("/api/posts").then((r) => r.json()).then(setPosts);
@@ -131,18 +213,56 @@ function PostsContent() {
     .filter((p) => {
       if (filterConfig !== "all" && p.configName !== filterConfig) return false;
       if (filterCreator !== "all" && p.creator !== filterCreator) return false;
+      if (filterArchetype !== "all") {
+        const style = p.visualArchetype || p.infographicStyle || "Text-Only";
+        if (filterArchetype === "Text-Only") {
+          if (!style.toLowerCase().includes("text-only") && style !== "none" && style !== "") return false;
+        } else if (!style.toLowerCase().includes(filterArchetype.toLowerCase())) {
+          return false;
+        }
+      }
       return true;
     })
     .sort((a, b) => {
       if (sortBy === "starred") {
         if (a.starred !== b.starred) return a.starred ? -1 : 1;
-        return b.likes - a.likes;
+        return getViralScore(b) - getViralScore(a) || (b.likes - a.likes);
       }
-      if (sortBy === "views") return b.views - a.views;
-      if (sortBy === "likes") return b.likes - a.likes;
-      if (sortBy === "retweets") return b.retweets - a.retweets;
-      if (sortBy === "datePosted") return (b.datePosted || "").localeCompare(a.datePosted || "");
-      if (sortBy === "dateAdded") return (b.dateAdded || "").localeCompare(a.dateAdded || "");
+      if (sortBy === "viralScore") {
+        const diff = getViralScore(b) - getViralScore(a);
+        if (diff !== 0) return diff;
+        return (b.views - a.views) || (b.likes - a.likes) || b.id.localeCompare(a.id);
+      }
+      if (sortBy === "engagementRate") {
+        const diff = getEngagementRate(b) - getEngagementRate(a);
+        if (diff !== 0) return diff;
+        return (b.views - a.views) || (b.likes - a.likes) || b.id.localeCompare(a.id);
+      }
+      if (sortBy === "bookmarks") {
+        const diff = (b.bookmarks || 0) - (a.bookmarks || 0);
+        if (diff !== 0) return diff;
+        return (b.likes - a.likes) || (b.views - a.views) || b.id.localeCompare(a.id);
+      }
+      if (sortBy === "views") {
+        const diff = (b.views || 0) - (a.views || 0);
+        if (diff !== 0) return diff;
+        return (b.likes - a.likes) || (b.retweets - a.retweets) || b.id.localeCompare(a.id);
+      }
+      if (sortBy === "likes") {
+        const diff = (b.likes || 0) - (a.likes || 0);
+        if (diff !== 0) return diff;
+        return (b.views - a.views) || (b.retweets - a.retweets) || b.id.localeCompare(a.id);
+      }
+      if (sortBy === "retweets") {
+        const diff = (b.retweets || 0) - (a.retweets || 0);
+        if (diff !== 0) return diff;
+        return (b.likes - a.likes) || (b.views - a.views) || b.id.localeCompare(a.id);
+      }
+      if (sortBy === "datePosted") {
+        const diff = (b.datePosted || "").localeCompare(a.datePosted || "");
+        if (diff !== 0) return diff;
+        return b.id.localeCompare(a.id);
+      }
       return 0;
     });
 
@@ -158,19 +278,24 @@ function PostsContent() {
     });
   };
 
-  const copyText = async (text: string) => {
+  const copyToClipboard = async (text: string, key: string) => {
     await navigator.clipboard.writeText(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(null), 2000);
   };
 
-  const getImageUrl = (post: Post) => {
-    if (!post.generatedImageUrl) return null;
-    const url = post.generatedImageUrl;
-    if (url.startsWith("http")) return url;
-    const filename = url.split("/").pop();
-    if (!filename) return null;
-    return `/api/proxy-image?url=data/generated-images/${filename}`;
+  const getEffectiveClaudePrompt = (post: Post) => {
+    const rawPacket = post.claudePromptPacket || post.generatedPostText || "";
+    const answer = personalAnswers[post.id]?.trim();
+    if (!answer) return rawPacket;
+
+    if (rawPacket.includes("[INSERT MY QUICK ANSWER HERE]")) {
+      return rawPacket.replace("[INSERT MY QUICK ANSWER HERE]", answer);
+    }
+    if (rawPacket.includes("[TYPE YOUR 1-2 SENTENCE OBSERVATION OR SCRAPED STAT HERE]")) {
+      return rawPacket.replace("[TYPE YOUR 1-2 SENTENCE OBSERVATION OR SCRAPED STAT HERE]", answer);
+    }
+    return `${rawPacket}\n\n### MY REAL OPERATOR OBSERVATION / DATA POINT:\n${answer}`;
   };
 
   const getOriginalMediaUrls = (post: Post): string[] => {
@@ -193,27 +318,24 @@ function PostsContent() {
     };
   };
 
-  const renderTweetHeader = (post: Post, size: "sm" | "lg" = "sm") => {
+  const renderTweetHeader = (post: Post) => {
     const info = getCreatorInfo(post.creator);
-    const avatarSize = size === "lg" ? "w-10 h-10" : "w-10 h-10";
-    const nameSize = size === "lg" ? "text-[15px]" : "text-[15px]";
-
     return (
       <div className="flex gap-3">
         {info.profilePic ? (
           <img
             src={proxyUrl(info.profilePic)}
             alt={post.creator}
-            className={`${avatarSize} rounded-full object-cover shrink-0`}
+            className="w-10 h-10 rounded-full object-cover shrink-0"
           />
         ) : (
-          <div className={`${avatarSize} rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-sm font-bold shrink-0`}>
+          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-sm font-bold shrink-0">
             {post.creator[0]?.toUpperCase()}
           </div>
         )}
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1 flex-wrap">
-            <span className={`${nameSize} font-bold text-white truncate`}>{info.displayName}</span>
+            <span className="text-[15px] font-bold text-white truncate">{info.displayName}</span>
             {info.isVerified && <VerifiedBadge className="h-[18px] w-[18px] shrink-0" />}
             <span className="text-[15px] text-[#71767b] truncate">@{post.creator}</span>
             <span className="text-[#71767b]">·</span>
@@ -255,11 +377,7 @@ function PostsContent() {
           <div className="p-2 rounded-full group-hover:bg-[#1d9bf0]/10 transition-colors">
             <Bookmark className="h-[18px] w-[18px]" />
           </div>
-        </button>
-        <button className="group flex items-center text-[#71767b] hover:text-[#1d9bf0] transition-colors">
-          <div className="p-2 rounded-full group-hover:bg-[#1d9bf0]/10 transition-colors">
-            <Share className="h-[18px] w-[18px]" />
-          </div>
+          <span className="text-[13px]">{post.bookmarks > 0 ? formatCount(post.bookmarks) : ""}</span>
         </button>
       </div>
     </div>
@@ -290,33 +408,13 @@ function PostsContent() {
     if (urls.length === 1) {
       return (
         <div className="rounded-2xl overflow-hidden border border-[#2f3336]">
-          <img src={proxyUrl(urls[0])} alt="Post media" className="w-full" />
-        </div>
-      );
-    }
-
-    if (urls.length === 2) {
-      return (
-        <div className="grid grid-cols-2 gap-0.5 rounded-2xl overflow-hidden border border-[#2f3336]">
-          {urls.map((url, i) => (
-            <img key={i} src={proxyUrl(url)} alt={`Media ${i + 1}`} className="w-full h-full object-cover aspect-[4/5]" />
-          ))}
-        </div>
-      );
-    }
-
-    if (urls.length === 3) {
-      return (
-        <div className="grid grid-cols-2 gap-0.5 rounded-2xl overflow-hidden border border-[#2f3336]">
-          <img src={proxyUrl(urls[0])} alt="Media 1" className="w-full h-full object-cover row-span-2" />
-          <img src={proxyUrl(urls[1])} alt="Media 2" className="w-full h-full object-cover aspect-square" />
-          <img src={proxyUrl(urls[2])} alt="Media 3" className="w-full h-full object-cover aspect-square" />
+          <img src={proxyUrl(urls[0])} alt="Post media" className="w-full object-cover max-h-[350px]" />
         </div>
       );
     }
 
     return (
-      <div className="grid grid-cols-2 grid-rows-2 gap-0.5 rounded-2xl overflow-hidden border border-[#2f3336]">
+      <div className="grid grid-cols-2 gap-0.5 rounded-2xl overflow-hidden border border-[#2f3336]">
         {urls.slice(0, 4).map((url, i) => (
           <img key={i} src={proxyUrl(url)} alt={`Media ${i + 1}`} className="w-full h-full object-cover aspect-square" />
         ))}
@@ -327,9 +425,9 @@ function PostsContent() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Posts</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Posts & Prompt Studio</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Browse analyzed X posts with AI-generated content
+          Reverse-engineered viral blueprints with direct Claude & Visual generation prompts
         </p>
       </div>
 
@@ -359,76 +457,122 @@ function PostsContent() {
           </SelectContent>
         </Select>
 
-        <Select value={sortBy} onValueChange={(v) => v && setSortBy(v as SortOption)}>
-          <SelectTrigger className="w-[180px] rounded-xl glass border-white/[0.08] h-10">
-            <ArrowUpDown className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
-            <SelectValue />
+        <Select value={filterArchetype} onValueChange={(v) => v && setFilterArchetype(v)}>
+          <SelectTrigger className="w-[220px] rounded-xl glass border-white/[0.08] h-10">
+            <ImageIcon className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
+            <SelectValue placeholder="Filter by visual style" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="likes">Most Likes</SelectItem>
-            <SelectItem value="views">Most Views</SelectItem>
-            <SelectItem value="retweets">Most Retweets</SelectItem>
-            <SelectItem value="datePosted">Date Posted</SelectItem>
-            <SelectItem value="dateAdded">Date Added</SelectItem>
-            <SelectItem value="starred">Starred First</SelectItem>
+            <SelectItem value="all">All Visual Styles</SelectItem>
+            <SelectItem value="Bar Chart Comparison">📊 Bar Chart Comparison</SelectItem>
+            <SelectItem value="Proportional Blocks">🧱 Proportional Blocks</SelectItem>
+            <SelectItem value="Ranked Horizontal Bars">📋 Ranked Horizontal Bars</SelectItem>
+            <SelectItem value="Timeline">📈 Timeline</SelectItem>
+            <SelectItem value="Pyramid / Funnel">🔺 Pyramid / Funnel</SelectItem>
+            <SelectItem value="Text-Only">✍️ Text-Only</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <Select value={sortBy} onValueChange={(v) => v && setSortBy(v as SortOption)}>
+          <SelectTrigger className="w-[245px] rounded-xl glass border-white/[0.08] h-10">
+            <ArrowUpDown className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
+            <SelectValue>{sortLabels[sortBy]}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="viralScore">⚡ Viral Score (X Algorithm)</SelectItem>
+            <SelectItem value="engagementRate">📈 Engagement Rate (%)</SelectItem>
+            <SelectItem value="likes">❤️ Most Likes</SelectItem>
+            <SelectItem value="views">👁️ Most Views</SelectItem>
+            <SelectItem value="retweets">🔁 Most Retweets</SelectItem>
+            <SelectItem value="bookmarks">🔖 Most Bookmarks</SelectItem>
+            <SelectItem value="datePosted">📅 Date Posted</SelectItem>
+            <SelectItem value="starred">⭐ Starred First</SelectItem>
           </SelectContent>
         </Select>
 
         <Badge variant="secondary" className="rounded-lg px-3 py-1.5 text-xs bg-white/[0.05] border border-white/[0.08]">
-          {filtered.length} posts
+          {filtered.length} analyzed posts
         </Badge>
       </div>
 
       {/* Post cards */}
-      <div className="space-y-4">
-        {filtered.map((post) => {
-          const genImageUrl = getImageUrl(post);
+      <div className="space-y-6">
+        {filtered.map((post, index) => {
           const originalMedia = getOriginalMediaUrls(post);
           const hasOriginalMedia = originalMedia.length > 0 && post.mediaType !== "none";
+          const effectiveClaudePrompt = getEffectiveClaudePrompt(post);
+          const hasVisualPrompt = Boolean(post.chatgptImagePrompt || post.generatedImagePrompt);
+          const visualStyle = post.visualArchetype || post.infographicStyle || "Text-Only";
+          const viralScore = getViralScore(post);
+          const er = getEngagementRate(post);
 
           return (
-            <div key={post.id} className="rounded-2xl border border-[#2f3336] bg-black/40 overflow-hidden transition-all duration-200 hover:bg-[#080808]/60">
-              {/* Top bar with star + actions */}
-              <div className="flex items-center justify-between px-4 pt-3 pb-0">
-                <div className="flex items-center gap-3">
+            <div key={post.id} className="rounded-2xl border border-[#2f3336] bg-black/40 overflow-hidden transition-all duration-200 hover:border-purple-500/30">
+              {/* Card Action Header */}
+              <div className="flex items-center justify-between px-5 py-3 border-b border-[#2f3336] bg-white/[0.02]">
+                <div className="flex items-center gap-2.5 flex-wrap">
+                  {/* Rank Badge */}
+                  <span
+                    className={`inline-flex items-center justify-center px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono tracking-tight shrink-0 ${
+                      index === 0
+                        ? "bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm shadow-amber-500/10"
+                        : index === 1
+                        ? "bg-slate-300/20 text-slate-200 border border-slate-300/40"
+                        : index === 2
+                        ? "bg-amber-700/20 text-amber-400 border border-amber-700/40"
+                        : "bg-white/[0.05] text-muted-foreground border border-white/[0.08]"
+                    }`}
+                  >
+                    #{index + 1}
+                  </span>
+
+                  {/* Viral Score Pill */}
+                  <div className="flex items-center gap-1.5 text-[11px] font-mono px-2.5 py-0.5 rounded-md bg-purple-500/10 text-purple-300 border border-purple-500/20 shrink-0">
+                    <Sparkles className="h-3 w-3 text-purple-400" />
+                    <span>Score: <strong>{formatCount(viralScore)}</strong></span>
+                    {er > 0 && <span className="text-purple-300/60 ml-0.5">· ER: {er.toFixed(1)}%</span>}
+                  </div>
+
+                  <div className="h-3.5 w-px bg-white/10 mx-0.5 hidden sm:block" />
+
                   <button
                     onClick={() => { setModalPost(post); setModalTab("original"); }}
-                    className="text-[13px] text-[#71767b] hover:text-[#1d9bf0] transition-colors flex items-center gap-1.5 hover:underline"
+                    className="text-[12px] text-[#71767b] hover:text-[#1d9bf0] transition-colors flex items-center gap-1.5 font-medium hover:underline"
                   >
                     <FileText className="h-3.5 w-3.5" />
-                    Original
+                    Original Tweet
                   </button>
                   <button
                     onClick={() => { setModalPost(post); setModalTab("analysis"); }}
-                    className="text-[13px] text-[#71767b] hover:text-[#7856ff] transition-colors flex items-center gap-1.5 hover:underline"
+                    className="text-[12px] text-[#71767b] hover:text-purple-400 transition-colors flex items-center gap-1.5 font-medium hover:underline"
                   >
                     <Search className="h-3.5 w-3.5" />
-                    Analysis
+                    Deep Analysis
                   </button>
                   <button
-                    onClick={() => { setModalPost(post); setModalTab("generated"); }}
-                    className="text-[13px] text-[#71767b] hover:text-[#00ba7c] transition-colors flex items-center gap-1.5 hover:underline"
+                    onClick={() => { setModalPost(post); setModalTab("claude"); }}
+                    className="text-[12px] text-purple-400 hover:text-purple-300 transition-colors flex items-center gap-1.5 font-medium hover:underline"
                   >
-                    <Sparkles className="h-3.5 w-3.5" />
-                    Generated
+                    <Cpu className="h-3.5 w-3.5" />
+                    Claude Prompt
                   </button>
-                </div>
-                <div className="flex items-center gap-2">
-                  {post.generatedPostText && (
+                  {hasVisualPrompt && (
                     <button
-                      onClick={() => copyText(post.generatedPostText)}
-                      className="text-[#71767b] hover:text-white transition-colors p-1.5 rounded-full hover:bg-white/[0.06]"
-                      title="Copy generated text"
+                      onClick={() => { setModalPost(post); setModalTab("image"); }}
+                      className="text-[12px] text-cyan-400 hover:text-cyan-300 transition-colors flex items-center gap-1.5 font-medium hover:underline"
                     >
-                      {copied ? <Check className="h-3.5 w-3.5 text-[#00ba7c]" /> : <Copy className="h-3.5 w-3.5" />}
+                      <ImageIcon className="h-3.5 w-3.5" />
+                      Visual Prompt
                     </button>
                   )}
+                </div>
+                <div className="flex items-center gap-2">
                   <a
                     href={post.link}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="text-[#71767b] hover:text-white transition-colors p-1.5 rounded-full hover:bg-white/[0.06]"
-                    title="View on X"
+                    title="View original on X"
                   >
                     <ExternalLink className="h-3.5 w-3.5" />
                   </a>
@@ -441,18 +585,29 @@ function PostsContent() {
                 </div>
               </div>
 
-              {/* Two-column tweet layout */}
+              {/* Two-Column Studio Layout */}
               <div className="grid grid-cols-1 lg:grid-cols-2">
-                {/* LEFT: Original tweet */}
-                <div className="p-4 lg:border-r border-[#2f3336]">
-                  <div className="mb-2">
-                    <span className="text-[11px] font-bold tracking-widest uppercase text-[#1d9bf0]/70">Original</span>
-                  </div>
-                  {/* Tweet */}
+                {/* LEFT: Original Scraped Post */}
+                <div className="p-5 lg:border-r border-[#2f3336] flex flex-col justify-between">
                   <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-bold tracking-widest uppercase text-[#1d9bf0]/80">
+                          Scraped Winner
+                        </span>
+                        <span className="text-[10px] font-mono text-muted-foreground/80">
+                          #{index + 1}
+                        </span>
+                      </div>
+                      <Badge variant="secondary" className="text-[10px] bg-white/[0.04] border-white/[0.06]">
+                        {post.configName}
+                      </Badge>
+                    </div>
+
                     {renderTweetHeader(post)}
+
                     <div className="pl-[52px] -mt-1">
-                      <p className="text-[15px] leading-[20px] text-[#e7e9ea] whitespace-pre-wrap break-words">
+                      <p className="text-[15px] leading-[22px] text-[#e7e9ea] whitespace-pre-wrap break-words">
                         {post.text}
                       </p>
                       {hasOriginalMedia && (
@@ -460,61 +615,136 @@ function PostsContent() {
                           {renderMediaGrid(originalMedia, post.mediaType)}
                         </div>
                       )}
-                      {renderTweetActions(post)}
                     </div>
+                  </div>
+
+                  <div className="pl-[52px]">
+                    {renderTweetActions(post)}
                   </div>
                 </div>
 
-                {/* RIGHT: AI Generated tweet */}
-                <div className="p-4 border-t lg:border-t-0 border-[#2f3336]">
-                  <div className="mb-2">
-                    <span className="text-[11px] font-bold tracking-widest uppercase text-[#00ba7c]/70">AI Generated</span>
-                  </div>
-                  {post.generatedPostText ? (
-                    <div>
-                      {/* Simulated tweet from @olegrows */}
-                      <div className="flex gap-3">
-                        <img src="/profile-picture.png" alt="Oleg" className="w-10 h-10 rounded-full object-cover shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-1">
-                            <span className="text-[15px] font-bold text-white">Oleg</span>
-                            <span className="text-[15px] text-[#71767b]">@olegrows</span>
-                            <span className="text-[#71767b]">·</span>
-                            <span className="text-[15px] text-[#71767b]">Draft</span>
-                          </div>
+                {/* RIGHT: Reverse-Engineered Blueprint & Studio Prompts */}
+                <div className="p-5 bg-gradient-to-b from-purple-500/[0.02] to-transparent space-y-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold tracking-widest uppercase text-purple-400 flex items-center gap-1.5">
+                      <Sparkles className="h-3 w-3" />
+                      Reverse-Engineered Blueprint & Prompts
+                    </span>
+                    {(() => {
+                      const badge = getArchetypeBadge(visualStyle);
+                      return (
+                        <div className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-semibold border ${badge.className}`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${badge.dot}`} />
+                          <span>{badge.label}</span>
                         </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Why it worked */}
+                  {post.whyItWorked && (
+                    <div className="rounded-xl bg-purple-500/5 border border-purple-500/10 p-3 space-y-1">
+                      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-purple-300">
+                        <Layers className="h-3 w-3" />
+                        Why It Worked (Viral Psychology)
                       </div>
-                      <div className="pl-[52px] -mt-1">
-                        <p className="text-[15px] leading-[20px] text-[#e7e9ea] whitespace-pre-wrap break-words">
-                          {post.generatedPostText}
-                        </p>
-                        {genImageUrl && (
-                          <div className="mt-3">
-                            <div className="rounded-2xl overflow-hidden border border-[#2f3336]">
-                              <img
-                                src={genImageUrl}
-                                alt="Generated infographic"
-                                className="w-full"
-                              />
-                            </div>
-                          </div>
-                        )}
-                        {post.infographicStyle && (
-                          <div className="mt-2">
-                            <span className="text-[12px] text-[#71767b] bg-[#1d1f23] px-2 py-0.5 rounded-full border border-[#2f3336]">
-                              {post.infographicStyle}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center py-12 text-[#71767b]">
-                      <Sparkles className="h-8 w-8 mb-3 opacity-30" />
-                      <p className="text-[13px]">Not yet generated</p>
-                      <p className="text-[12px] mt-1 opacity-60">Run the pipeline to generate content</p>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        {post.whyItWorked}
+                      </p>
                     </div>
                   )}
+
+                  {/* Hook Formula */}
+                  {post.hookFormula && (
+                    <div className="rounded-xl bg-black/40 border border-white/[0.06] p-3 space-y-1">
+                      <div className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">
+                        Extracted Hook Formula
+                      </div>
+                      <p className="text-xs font-mono text-cyan-300/90 leading-relaxed bg-white/[0.02] p-2 rounded-lg border border-white/[0.04]">
+                        {post.hookFormula}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Visual / Image Prompt Box */}
+                  {hasVisualPrompt ? (
+                    <div className="rounded-xl bg-black/40 border border-white/[0.06] p-3 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-1.5 text-[11px] font-semibold text-cyan-400">
+                          <ImageIcon className="h-3 w-3" />
+                          <span>Branded Infographic Prompt ({getArchetypeBadge(visualStyle).label})</span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => copyToClipboard(post.chatgptImagePrompt || post.generatedImagePrompt, `img-${post.id}`)}
+                          className="h-7 px-2.5 text-[11px] gap-1 rounded-lg text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10"
+                        >
+                          {copiedKey === `img-${post.id}` ? (
+                            <>
+                              <Check className="h-3 w-3 text-emerald-400" />
+                              <span className="text-emerald-400">Copied!</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3 w-3" />
+                              Copy Prompt
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground/90 font-mono leading-relaxed line-clamp-2 bg-white/[0.02] p-2 rounded-lg border border-white/[0.04]">
+                        {post.chatgptImagePrompt || post.generatedImagePrompt}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="rounded-xl bg-white/[0.02] border border-white/[0.06] px-3 py-2 flex items-center justify-between text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1.5 text-[11px]">
+                        <span className="h-1.5 w-1.5 rounded-full bg-slate-400" />
+                        Text-Only format (no infographic needed)
+                      </span>
+                      <span className="text-[10px] text-muted-foreground/60">Copy-driven viral hook</span>
+                    </div>
+                  )}
+
+                  {/* Interactive Personalization Input */}
+                  {post.personalizeQuestion && (
+                    <div className="space-y-1.5 pt-1">
+                      <label className="text-[11px] text-muted-foreground flex items-center gap-1.5">
+                        <HelpCircle className="h-3 w-3 text-purple-400" />
+                        {post.personalizeQuestion}
+                      </label>
+                      <Input
+                        value={personalAnswers[post.id] || ""}
+                        onChange={(e) => setPersonalAnswers({ ...personalAnswers, [post.id]: e.target.value })}
+                        placeholder="Add your observation or data point (dynamically injected into Claude prompt)..."
+                        className="rounded-xl glass border-white/[0.08] text-xs h-9 bg-black/40"
+                      />
+                    </div>
+                  )}
+
+                  {/* Claude Master Prompt Box + Big Copy Button */}
+                  <div className="pt-2">
+                    <Button
+                      onClick={() => copyToClipboard(effectiveClaudePrompt, `claude-${post.id}`)}
+                      className="w-full rounded-xl h-11 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 border-0 text-white font-medium text-xs gap-2 glow-sm transition-all"
+                    >
+                      {copiedKey === `claude-${post.id}` ? (
+                        <>
+                          <Check className="h-4 w-4 text-white" />
+                          Claude Prompt Copied to Clipboard!
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-4 w-4" />
+                          Copy Complete Claude Master Prompt
+                        </>
+                      )}
+                    </Button>
+                    <p className="text-[10px] text-muted-foreground/60 text-center mt-1.5">
+                      Paste directly into Claude (or any LLM) to draft your viral post/thread in your voice
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -528,245 +758,150 @@ function PostsContent() {
           <div className="relative inline-block">
             <XLogo className="mx-auto h-12 w-12 text-[#71767b]/30" />
           </div>
-          <h3 className="mt-5 text-xl font-bold text-white">No posts yet</h3>
+          <h3 className="mt-5 text-xl font-bold text-white">No posts analyzed yet</h3>
           <p className="mt-2 text-[15px] text-[#71767b] max-w-sm mx-auto">
-            Run the pipeline to scrape viral posts, analyze them with AI, and generate ready-to-publish content.
+            Head over to Run Pipeline to scrape top performing X posts and generate your reverse-engineered prompts.
           </p>
+          <div className="mt-6">
+            <Button
+              render={<a href="/run" />}
+              className="rounded-xl bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-600 hover:to-indigo-700 border-0"
+            >
+              Go to Run Pipeline
+            </Button>
+          </div>
         </div>
       )}
 
       {/* Detail Modal */}
-      <Dialog open={!!modalPost} onOpenChange={(open) => { if (!open) { setModalPost(null); setShowImagePrompt(false); } }}>
-        <DialogContent className="!flex !flex-col max-w-2xl max-h-[90vh] overflow-hidden rounded-2xl border border-[#2f3336] bg-black/95 backdrop-blur-2xl p-0 gap-0">
-          <DialogTitle className="sr-only">
-            {modalTab === "original" ? "Original Post" : modalTab === "analysis" ? "Post Analysis" : "Generated Content"}
-          </DialogTitle>
+      <Dialog open={!!modalPost} onOpenChange={(open) => { if (!open) setModalPost(null); }}>
+        <DialogContent className="!flex !flex-col max-w-3xl max-h-[90vh] overflow-hidden rounded-2xl border border-[#2f3336] bg-black/95 backdrop-blur-2xl p-0 gap-0">
+          <DialogTitle className="sr-only">Post Details</DialogTitle>
           {modalPost && (() => {
             const info = getCreatorInfo(modalPost.creator);
+            const originalMedia = getOriginalMediaUrls(modalPost);
+            const effectiveClaudePrompt = getEffectiveClaudePrompt(modalPost);
+
             return (
               <>
-                {/* Modal header */}
-                <div className="shrink-0 border-b border-[#2f3336]">
-                  <div className="flex items-center justify-between px-4 pt-3 pb-2">
-                    <div className="flex items-center gap-3">
-                      {(["original", "analysis", "generated"] as const).map((tab) => (
-                        <button
-                          key={tab}
-                          onClick={() => setModalTab(tab)}
-                          className={`relative px-3 pb-3 pt-1 text-[13px] font-bold transition-colors ${
-                            modalTab === tab
-                              ? "text-white"
-                              : "text-[#71767b] hover:text-[#d6d9db]"
-                          }`}
-                        >
-                          <span className="inline-flex items-center gap-1.5">
-                            {tab === "original" && <FileText className="h-3.5 w-3.5" />}
-                            {tab === "analysis" && <Search className="h-3.5 w-3.5" />}
-                            {tab === "generated" && <Sparkles className="h-3.5 w-3.5" />}
-                            {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                          </span>
-                          {modalTab === tab && (
-                            <span className={`absolute bottom-0 left-0 right-0 h-[4px] rounded-full ${
-                              tab === "original" ? "bg-[#1d9bf0]" : tab === "analysis" ? "bg-[#7856ff]" : "bg-[#00ba7c]"
-                            }`} />
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                    <a
-                      href={modalPost.link}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-[#71767b] hover:text-white p-2 rounded-full hover:bg-white/[0.06] transition-colors"
-                    >
-                      <ExternalLink className="h-4 w-4" />
-                    </a>
+                {/* Modal Header Tabs */}
+                <div className="shrink-0 border-b border-[#2f3336] px-4 pt-3 pb-2 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {(["claude", "image", "analysis", "original"] as const).map((tab) => (
+                      <button
+                        key={tab}
+                        onClick={() => setModalTab(tab)}
+                        className={`relative px-3 pb-3 pt-1 text-[13px] font-bold transition-colors ${
+                          modalTab === tab ? "text-white" : "text-[#71767b] hover:text-[#d6d9db]"
+                        }`}
+                      >
+                        <span className="inline-flex items-center gap-1.5">
+                          {tab === "claude" && <Cpu className="h-3.5 w-3.5" />}
+                          {tab === "image" && <ImageIcon className="h-3.5 w-3.5" />}
+                          {tab === "analysis" && <Search className="h-3.5 w-3.5" />}
+                          {tab === "original" && <FileText className="h-3.5 w-3.5" />}
+                          {tab === "claude" && "Claude Prompt"}
+                          {tab === "image" && "Visual Prompt"}
+                          {tab === "analysis" && "Deep Analysis"}
+                          {tab === "original" && "Original Tweet"}
+                        </span>
+                        {modalTab === tab && (
+                          <span className="absolute bottom-0 left-0 right-0 h-[4px] rounded-full bg-purple-500" />
+                        )}
+                      </button>
+                    ))}
                   </div>
+                  <a
+                    href={modalPost.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[#71767b] hover:text-white p-2 rounded-full hover:bg-white/[0.06] transition-colors"
+                  >
+                    <ExternalLink className="h-4 w-4" />
+                  </a>
                 </div>
 
-                {/* Modal body */}
-                <div className="overflow-y-auto min-h-0 flex-1">
-                  {modalTab === "original" && (
-                    <div className="p-4">
-                      {/* Full tweet layout */}
-                      <div className="flex gap-3">
-                        {info.profilePic ? (
-                          <img src={proxyUrl(info.profilePic)} alt={modalPost.creator} className="w-10 h-10 rounded-full object-cover shrink-0" />
-                        ) : (
-                          <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-sm font-bold shrink-0">
-                            {modalPost.creator[0]?.toUpperCase()}
-                          </div>
-                        )}
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-1">
-                            <span className="text-[15px] font-bold text-white">{info.displayName}</span>
-                            {info.isVerified && <VerifiedBadge />}
-                          </div>
-                          <span className="text-[15px] text-[#71767b]">@{modalPost.creator}</span>
+                {/* Modal Body */}
+                <div className="overflow-y-auto min-h-0 flex-1 p-6">
+                  {modalTab === "claude" && (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="text-sm font-semibold text-white">Claude Pro Master Writing Prompt</h3>
+                          <p className="text-xs text-muted-foreground">Pre-loaded with reverse-engineered hook, formula, and writing constraints</p>
                         </div>
+                        <Button
+                          onClick={() => copyToClipboard(effectiveClaudePrompt, "modal-claude")}
+                          className="rounded-xl h-9 bg-purple-600 hover:bg-purple-700 gap-1.5 text-xs text-white"
+                        >
+                          {copiedKey === "modal-claude" ? <Check className="h-3.5 w-3.5 text-emerald-300" /> : <Copy className="h-3.5 w-3.5" />}
+                          {copiedKey === "modal-claude" ? "Copied!" : "Copy Prompt"}
+                        </Button>
                       </div>
 
-                      <div className="mt-3">
-                        <p className="text-[17px] leading-[24px] text-[#e7e9ea] whitespace-pre-wrap break-words">
-                          {modalPost.text}
-                        </p>
+                      <div className="rounded-xl bg-black/60 border border-white/[0.08] p-4">
+                        <pre className="text-xs font-mono text-purple-200/90 whitespace-pre-wrap leading-relaxed">
+                          {effectiveClaudePrompt}
+                        </pre>
+                      </div>
+                    </div>
+                  )}
 
-                        {/* Media */}
-                        {(() => {
-                          const urls = getOriginalMediaUrls(modalPost);
-                          if (urls.length === 0 || modalPost.mediaType === "none") return null;
-                          return (
-                            <div className="mt-3">
-                              {renderMediaGrid(urls, modalPost.mediaType)}
-                            </div>
-                          );
-                        })()}
-
-                        {/* Timestamp */}
-                        <div className="mt-4 text-[15px] text-[#71767b]">
-                          {formatDate(modalPost.datePosted)}
-                        </div>
-
-                        {/* Engagement stats */}
-                        <div className="mt-3 pt-3 border-t border-[#2f3336] flex flex-wrap gap-4">
-                          {modalPost.retweets > 0 && (
-                            <div><span className="text-[14px] font-bold text-white">{formatCount(modalPost.retweets)}</span><span className="text-[14px] text-[#71767b] ml-1">Reposts</span></div>
-                          )}
-                          {modalPost.quotes > 0 && (
-                            <div><span className="text-[14px] font-bold text-white">{formatCount(modalPost.quotes)}</span><span className="text-[14px] text-[#71767b] ml-1">Quotes</span></div>
-                          )}
-                          {modalPost.likes > 0 && (
-                            <div><span className="text-[14px] font-bold text-white">{formatCount(modalPost.likes)}</span><span className="text-[14px] text-[#71767b] ml-1">Likes</span></div>
-                          )}
-                          {modalPost.bookmarks > 0 && (
-                            <div><span className="text-[14px] font-bold text-white">{formatCount(modalPost.bookmarks)}</span><span className="text-[14px] text-[#71767b] ml-1">Bookmarks</span></div>
-                          )}
-                          {modalPost.views > 0 && (
-                            <div><span className="text-[14px] font-bold text-white">{formatCount(modalPost.views)}</span><span className="text-[14px] text-[#71767b] ml-1">Views</span></div>
-                          )}
-                        </div>
-
-                        {/* Action bar */}
-                        <div className="mt-1 pt-3 border-t border-[#2f3336]">
-                          <div className="flex items-center justify-around">
-                            <button className="text-[#71767b] hover:text-[#1d9bf0] p-2 rounded-full hover:bg-[#1d9bf0]/10 transition-colors">
-                              <MessageCircle className="h-5 w-5" />
-                            </button>
-                            <button className="text-[#71767b] hover:text-[#00ba7c] p-2 rounded-full hover:bg-[#00ba7c]/10 transition-colors">
-                              <Repeat2 className="h-5 w-5" />
-                            </button>
-                            <button className="text-[#71767b] hover:text-[#f91880] p-2 rounded-full hover:bg-[#f91880]/10 transition-colors">
-                              <Heart className="h-5 w-5" />
-                            </button>
-                            <button className="text-[#71767b] hover:text-[#1d9bf0] p-2 rounded-full hover:bg-[#1d9bf0]/10 transition-colors">
-                              <BarChart3 className="h-5 w-5" />
-                            </button>
-                            <button className="text-[#71767b] hover:text-[#1d9bf0] p-2 rounded-full hover:bg-[#1d9bf0]/10 transition-colors">
-                              <Bookmark className="h-5 w-5" />
-                            </button>
-                            <button className="text-[#71767b] hover:text-[#1d9bf0] p-2 rounded-full hover:bg-[#1d9bf0]/10 transition-colors">
-                              <Share className="h-5 w-5" />
-                            </button>
+                  {modalTab === "image" && (
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="text-sm font-semibold text-white">Branded Infographic Prompt</h3>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="text-xs text-muted-foreground">Archetype:</span>
+                            {(() => {
+                              const b = getArchetypeBadge(modalPost.visualArchetype || modalPost.infographicStyle || "");
+                              return (
+                                <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold border ${b.className}`}>
+                                  <span className={`h-1.5 w-1.5 rounded-full ${b.dot}`} />
+                                  <span>{b.label}</span>
+                                </span>
+                              );
+                            })()}
                           </div>
                         </div>
+                        <Button
+                          onClick={() => copyToClipboard(modalPost.chatgptImagePrompt || modalPost.generatedImagePrompt, "modal-img")}
+                          className="rounded-xl h-9 bg-cyan-600 hover:bg-cyan-700 gap-1.5 text-xs text-white"
+                        >
+                          {copiedKey === "modal-img" ? <Check className="h-3.5 w-3.5 text-emerald-300" /> : <Copy className="h-3.5 w-3.5" />}
+                          {copiedKey === "modal-img" ? "Copied!" : "Copy Visual Prompt"}
+                        </Button>
+                      </div>
+
+                      <div className="rounded-xl bg-black/60 border border-white/[0.08] p-4">
+                        <pre className="text-xs font-mono text-cyan-200/90 whitespace-pre-wrap leading-relaxed">
+                          {modalPost.chatgptImagePrompt || modalPost.generatedImagePrompt || "No specific image prompt required for this post."}
+                        </pre>
                       </div>
                     </div>
                   )}
 
                   {modalTab === "analysis" && (
-                    <div className="px-6 py-5">
+                    <div>
                       <MarkdownContent content={modalPost.analysis} />
                     </div>
                   )}
 
-                  {modalTab === "generated" && (
-                    <div className="p-4">
-                      {modalPost.generatedPostText ? (
-                        <>
-                          {/* Generated tweet preview */}
-                          <div className="flex gap-3">
-                            <img src="/profile-picture.png" alt="Oleg" className="w-10 h-10 rounded-full object-cover shrink-0" />
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1">
-                                <span className="text-[15px] font-bold text-white">Oleg</span>
-                                <span className="text-[15px] text-[#71767b]">@olegrows</span>
-                                <span className="text-[#71767b]">·</span>
-                                <span className="text-[15px] text-[#71767b]">Draft</span>
-                              </div>
-                            </div>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => copyText(modalPost.generatedPostText)}
-                              className="h-8 rounded-full text-[13px] gap-1.5 text-[#71767b] hover:text-white hover:bg-white/[0.06]"
-                            >
-                              {copied ? <Check className="h-3.5 w-3.5 text-[#00ba7c]" /> : <Copy className="h-3.5 w-3.5" />}
-                              {copied ? "Copied" : "Copy"}
-                            </Button>
-                          </div>
-
-                          <div className="mt-3">
-                            <p className="text-[17px] leading-[24px] text-[#e7e9ea] whitespace-pre-wrap break-words">
-                              {modalPost.generatedPostText}
-                            </p>
-
-                            {/* Generated infographic */}
-                            {(() => {
-                              const imgUrl = getImageUrl(modalPost);
-                              if (!imgUrl) return null;
-                              return (
-                                <div className="mt-3">
-                                  <div className="rounded-2xl overflow-hidden border border-[#2f3336]">
-                                    <img src={imgUrl} alt="Generated infographic" className="w-full" />
-                                  </div>
-                                  <div className="mt-2 flex items-center justify-between">
-                                    {modalPost.infographicStyle && (
-                                      <span className="text-[12px] text-[#71767b] bg-[#1d1f23] px-2.5 py-1 rounded-full border border-[#2f3336]">
-                                        {modalPost.infographicStyle}
-                                      </span>
-                                    )}
-                                    <a
-                                      href={imgUrl}
-                                      download={`infographic-${modalPost.id}.png`}
-                                      className="inline-flex items-center gap-1.5 text-[13px] text-[#1d9bf0] hover:underline"
-                                    >
-                                      <Download className="h-3.5 w-3.5" />
-                                      Download
-                                    </a>
-                                  </div>
-                                </div>
-                              );
-                            })()}
-
-                            {/* Collapsible image prompt */}
-                            {modalPost.generatedImagePrompt && (
-                              <div className="mt-4 pt-3 border-t border-[#2f3336]">
-                                <button
-                                  onClick={() => setShowImagePrompt(!showImagePrompt)}
-                                  className="flex items-center gap-1.5 text-[13px] text-[#71767b] hover:text-[#d6d9db] transition-colors"
-                                >
-                                  <ChevronDown className={`h-3.5 w-3.5 transition-transform duration-200 ${showImagePrompt ? "rotate-180" : ""}`} />
-                                  <ImageIcon className="h-3.5 w-3.5" />
-                                  Image Prompt
-                                </button>
-                                {showImagePrompt && (
-                                  <div className="mt-2 rounded-xl bg-[#16181c] border border-[#2f3336] p-4">
-                                    <p className="text-[13px] text-[#71767b] leading-relaxed whitespace-pre-wrap">
-                                      {modalPost.generatedImagePrompt}
-                                    </p>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        </>
-                      ) : (
-                        <div className="text-center py-16">
-                          <Sparkles className="mx-auto h-10 w-10 text-[#71767b]/20" />
-                          <p className="mt-3 text-[15px] text-[#71767b]">No generated content</p>
-                          <p className="mt-1 text-[13px] text-[#71767b]/60">Run the pipeline to generate content for this post</p>
+                  {modalTab === "original" && (
+                    <div className="space-y-4">
+                      {renderTweetHeader(modalPost)}
+                      <p className="text-[17px] leading-[24px] text-[#e7e9ea] whitespace-pre-wrap break-words pl-[52px]">
+                        {modalPost.text}
+                      </p>
+                      {originalMedia.length > 0 && (
+                        <div className="pl-[52px]">
+                          {renderMediaGrid(originalMedia, modalPost.mediaType)}
                         </div>
                       )}
+                      <div className="pl-[52px] text-xs text-muted-foreground">
+                        Posted {formatDate(modalPost.datePosted)}
+                      </div>
                     </div>
                   )}
                 </div>

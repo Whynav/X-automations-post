@@ -1,19 +1,31 @@
 node_modules/
 .next/
 .DS_Store
+*.DS_Store
+Thumbs.db
 
-# env
+# env files (strictly ignore actual keys)
 .env
+.env.*
 .env.local
 .env.*.local
+!.env.example
 
-# generated data
+# generated data & run outputs
 data/posts.csv
 data/generated-images/
 output/
 
-# misc
+# secrets & credentials
 *.pem
+credentials.json
+token.json
+
+# misc
 *.tsbuildinfo
 next-env.d.ts
 npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.vercel

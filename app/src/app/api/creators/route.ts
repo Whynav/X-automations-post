@@ -8,7 +8,7 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
-  const { username, category } = await req.json();
+  const { username, category, studyFocus } = await req.json();
   if (!username || !category) {
     return NextResponse.json({ error: "username and category required" }, { status: 400 });
   }
@@ -39,6 +39,8 @@ export async function POST(req: NextRequest) {
     ...stats,
     category,
     lastScrapedAt: new Date().toISOString(),
+    studyFocus: studyFocus || "",
+    active: true,
   };
 
   creators.push(creator);
